@@ -1,0 +1,63 @@
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+/* ---- readable text in light backgrounds ---- */
+div, p, span, label, button, input, textarea {
+  color: #1f2937; /* dark gray text */
+}
+
+/* optional: style your yellow payment box */
+.payment-box {
+  background-color: #fff8dc; /* light yellow */
+  color: #1f2937;             /* readable dark gray */
+  padding: 1rem;
+  border-radius: 0.5rem;
+}
+
+button {
+  background-color: #111;
+  color: #fff;
+  padding: 0.4rem 1rem;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+}
+button:hover {
+  opacity: 0.9;
+}
+/* --- readable text for light backgrounds --- */
+div, p, h3, li {
+  color: #1f2937; /* dark gray text */
+}
+
+/* Style for your vibe report box */
+.vibe-box {
+  background-color: #e7f5ff; /* light blue */
+  color: #1f2937; /* dark gray for visibility */
+  padding: 1rem;
+  border-radius: 0.5rem;
+}
+
