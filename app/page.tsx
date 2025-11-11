@@ -21,36 +21,117 @@ export default function Home() {
   const [report, setReport] = useState<any>(null);
   const [errMsg, setErrMsg] = useState<string | null>(null);
 
-  // Submit profile -> expect HTTP 402 with x402 metadata
-  async function submitProfile() {
+  // search state
+  const [working, setWorking] = useState(false);
+  const [foundProfile, setFoundProfile] = useState<any | null>(null);
+  const [imgError, setImgError] = useState(false);
+
+  // Combined flow: search -> /api/check
+  async function searchAndCheck() {
     try {
-      setStatus("loading");
-      setReport(null);
+      setWorking(true);
       setErrMsg(null);
+      setFoundProfile(null);
+      setReport(null);
+      setPaymentMeta(null);
 
-      const res = await fetch("/api/check", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, handle, platform, bio }),
-      });
-
-      if (res.status === 402) {
-        const data = await res.json();
-        setPaymentMeta(data);
-        setStatus("pay");
+      if (!handle && !name) {
+        setErrMsg("Provide a handle or name to search.");
+        setWorking(false);
         return;
       }
 
+      // 1) search
+      const res = await fetch("/api/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ handle, platform, name }),
+      });
+
       const data = await res.json();
-      setReport(data);
+      if (!res.ok) {
+        setErrMsg(data?.error || "Search failed");
+        setWorking(false);
+        return;
+      }
+      if (data.found === false) {
+        setErrMsg(data.message || "No profile found");
+        setWorking(false);
+        return;
+      }
+
+      const p = data.profile;
+      setName(p.name || name);
+      setHandle(p.handle || handle);
+      setPlatform(p.platform || platform);
+      setBio(p.bio || bio);
+      setFoundProfile(p);
+
+      // 2) call /api/check with the profile object
+      setStatus("loading");
+      const checkRes = await fetch("/api/check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: p.name || name,
+          handle: p.handle || handle,
+          platform: p.platform || platform,
+          bio: p.bio || bio,
+        }),
+      });
+
+      if (checkRes.status === 402) {
+        const meta = await checkRes.json();
+        setPaymentMeta(meta);
+        setStatus("pay");
+        setWorking(false);
+        return;
+      }
+
+      const reportJson = await checkRes.json();
+      setReport(reportJson);
       setStatus("done");
+      setWorking(false);
     } catch (e: any) {
-      setErrMsg(e?.message || "Failed to run check");
+      setErrMsg(e?.message || "Search + check failed");
+      setWorking(false);
       setStatus("error");
     }
   }
 
-  // Real SOL payment on Solana Devnet via Phantom, then unlock
+  // Fetch the protected report (used by "Result" button)
+  async function fetchResult() {
+    try {
+      setErrMsg(null);
+
+      // If we already have a report, nothing to fetch
+      if (report) return;
+
+      // If paymentMeta exists, try to fetch by checkId
+      if (paymentMeta?.checkId) {
+        const res = await fetch(`/api/check?checkId=${paymentMeta.checkId}`);
+        if (res.status === 402) {
+          setErrMsg("Report still locked (not paid).");
+          return;
+        }
+        if (!res.ok) {
+          const json = await res.json().catch(() => ({}));
+          setErrMsg(json?.error || "Failed to fetch report");
+          return;
+        }
+        const data = await res.json();
+        setReport(data);
+        setStatus("done");
+        return;
+      }
+
+      setErrMsg("No checkId available. Run 'Run Vibe Check' first.");
+    } catch (e: any) {
+      setErrMsg(e?.message || "Failed to fetch result");
+    }
+  }
+
+  // Payment flow (unchanged): Phantom + SOL transfer, then fetch report
   async function doPayment() {
     if (!paymentMeta) return;
 
@@ -121,6 +202,15 @@ export default function Home() {
     }
   }
 
+  // Helper: generate initials avatar when image not available
+  function initialsAvatar(nameStr?: string, handleStr?: string) {
+    const source = nameStr || handleStr || "";
+    const parts = source.trim().split(/\s+/);
+    if (parts.length === 0 || !parts[0]) return "?";
+    if (parts.length === 1) return parts[0][0].toUpperCase();
+    return (parts[0][0] + parts[1][0]).toUpperCase();
+  }
+
   return (
     <main style={styles.page}>
       <h1 style={styles.title}>VibeCheck.ai (x402 demo)</h1>
@@ -157,9 +247,29 @@ export default function Home() {
           placeholder="Paste profile bio / description / notes"
           style={{ ...styles.input, height: 100 }}
         />
-        <button onClick={submitProfile} style={styles.primaryBtn} disabled={status === "loading"}>
-          {status === "loading" ? "Checking..." : "Run Vibe Check"}
-        </button>
+
+        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+          <button
+            onClick={searchAndCheck}
+            style={{ ...styles.primaryBtn, width: "50%", background: "#06b6d4" }}
+            disabled={working || status === "loading" || status === "paying"}
+          >
+            {working || status === "loading" ? "Working…" : "Run Vibe Check"}
+          </button>
+          <button
+            onClick={() => { setName(""); setHandle(""); setBio(""); setFoundProfile(null); setErrMsg(null); setPaymentMeta(null); setReport(null); setStatus("idle"); }}
+            style={{ ...styles.primaryBtn, width: "48%", background: "#ef4444" }}
+          >
+            Reset
+          </button>
+          <button
+            onClick={fetchResult}
+            style={{ ...styles.primaryBtn, width: "50%", background: "#8b5cf6" }}
+            disabled={status === "loading" || status === "paying"}
+          >
+            Fetch Result
+          </button>
+        </div>
       </div>
 
       {errMsg && (
@@ -168,6 +278,84 @@ export default function Home() {
         </div>
       )}
 
+      {/* Found profile preview (image + details). If image fails, show initials avatar */}
+      {foundProfile && (
+  <div
+    style={{
+      ...styles.payBox,
+      marginTop: 12,
+      display: "flex",
+      gap: 12,
+      alignItems: "center",
+    }}
+  >
+    <div
+      style={{
+        width: 72,
+        height: 72,
+        borderRadius: 8,
+        overflow: "hidden",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "#222",
+      }}
+    >
+      {foundProfile.profile_pic && !imgError ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={foundProfile.profile_pic}
+          alt="pfp"
+          style={{ width: "100%", height: "100%", objectFit: "cover" }}
+          onError={() => setImgError(true)}
+        />
+      ) : (
+        <div style={{ color: "white", fontSize: 22, fontWeight: 700 }}>
+          {initialsAvatar(foundProfile.name, foundProfile.handle)}
+        </div>
+      )}
+    </div>
+
+    <div>
+      <div style={{ marginBottom: 4 }}>
+        <b>{foundProfile.name ?? "Unknown"}</b>{" "}
+        <span style={{ opacity: 0.8 }}>@{foundProfile.handle ?? ""}</span>
+      </div>
+
+      {/* Profile link (opens first source URL) */}
+      {Array.isArray(foundProfile.source_urls) && foundProfile.source_urls.length > 0 && (
+        <a
+          href={foundProfile.source_urls[0]}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{
+            fontSize: 13,
+            color: "#06b6d4",
+            textDecoration: "none",
+            display: "inline-block",
+            marginBottom: 6,
+          }}
+        >
+          🔗 View profile
+        </a>
+      )}
+
+      <div style={{ fontSize: 13, opacity: 0.9, marginBottom: 6 }}>
+        {foundProfile.bio}
+      </div>
+
+      <div style={{ fontSize: 12, opacity: 0.8 }}>
+        {foundProfile.followers ? `${foundProfile.followers} followers • ` : ""}
+        {foundProfile.last_active
+          ? `Last active: ${new Date(foundProfile.last_active).toLocaleDateString()}`
+          : ""}
+      </div>
+    </div>
+  </div>
+)}
+
+
+      {/* Payment UI */}
       {status === "pay" && paymentMeta && (
         <div style={styles.payBox}>
           <h3 style={{ margin: 0 }}>402 Payment Required (x402)</h3>
@@ -179,12 +367,18 @@ export default function Home() {
             Paying to: {(paymentMeta.recipient || paymentMeta.pay_to || "").slice(0, 6)}…
             {(paymentMeta.recipient || paymentMeta.pay_to || "").slice(-6)}
           </p>
-          <button onClick={doPayment} style={styles.payBtn} disabled={status === "paying"}>
-            {status === "paying" ? "Waiting for wallet…" : "Pay with Solana (Phantom)"}
-          </button>
+          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+            <button onClick={doPayment} style={styles.payBtn} disabled={status === "paying"}>
+              {status === "paying" ? "Waiting for wallet…" : "Pay with Solana (Phantom)"}
+            </button>
+            <button onClick={() => fetchResult()} style={{ ...styles.primaryBtn, background: "#f59e0b" }}>
+              Try fetch result
+            </button>
+          </div>
         </div>
       )}
 
+      {/* Report UI */}
       {status === "done" && report && (
         <div style={styles.reportBox}>
           <h3 style={{ marginTop: 0 }}>Vibe Report</h3>
@@ -265,7 +459,7 @@ const styles: Record<string, React.CSSProperties> = {
     color: "white",
     fontWeight: 700,
     cursor: "pointer",
-    marginTop: 8,
+    marginTop: 0,
   },
   reportBox: {
     background: "#e6f0ff",
