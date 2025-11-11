@@ -426,8 +426,8 @@ setStatus("done");
       {(paymentMeta.recipient || paymentMeta.pay_to || "").slice(-6)}
     </p>
     <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-      <button onClick={doPayment} style={styles.payBtn} disabled={status === "paying" || !paymentMeta}>
-        {status === "paying" ? "Waiting for wallet…" : "Pay with Solana (Phantom)"}
+      <button onClick={doPayment} style={styles.payBtn} disabled={status === "pay" || !paymentMeta}>
+        {status === "pay" ? "Waiting for wallet…" : "Pay with Solana (Phantom)"}
       </button>
       <button onClick={() => fetchResult()} style={{ ...styles.primaryBtn, background: "#f59e0b" }}>
         Try fetch result
