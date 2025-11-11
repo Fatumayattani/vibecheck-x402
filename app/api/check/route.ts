@@ -1,5 +1,6 @@
 // app/api/check/route.ts
 import { NextResponse } from "next/server";
+import { Connection } from "@solana/web3.js";
 
 // in-memory store for this demo
 const CHECKS: Record<string, any> = {};
@@ -17,26 +18,33 @@ export async function POST(req: Request) {
   const checkId = makeId();
 
   // store what they sent
-  CHECKS[checkId] = { name, handle, platform, bio };
+CHECKS[checkId] = { name, handle, platform, bio };
 
-  return new NextResponse(
-  JSON.stringify({
-    status: "payment_required",
-    protocol: "x402",
-    amount: "0.01",            // or 0.1
-    token: "SOL",              // or "USDC"
-    network: "solana-devnet",
-    recipient: "YOUR_SOLANA_WALLET",
-    checkId,
-  }),
-  {
-    status: 402,
-    headers: {
-      "Content-Type": "application/json",
-      "X-402-Payment-Required": "true",
+const responseBody = {
+  x402Version: 1,
+  accepts: [
+    {
+      type: "solana",
+      token: "SOL",
+      network: "devnet",
+      recipient: "AWDiwHHqjf1mxUH1fHLZaT6utStEYsszYLXmVpU4FRLV",
+      amount: "0.01", // tiny SOL micropayment
     },
-  }
-);
+  ],
+  checkId,
+};
+
+// Optional debug print (safe to remove later)
+console.log(">>> 402 response being sent:", responseBody);
+
+// ✅ return the response
+return new NextResponse(JSON.stringify(responseBody), {
+  status: 402,
+  headers: {
+    "Content-Type": "application/json",
+    "X-402-Payment-Required": "true",
+  },
+});
 
 }
 
@@ -44,12 +52,28 @@ export async function POST(req: Request) {
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const checkId = searchParams.get("checkId") || "";
+  const sig = searchParams.get("sig");
 
   if (!checkId || !CHECKS[checkId]) {
     return NextResponse.json({ error: "not found" }, { status: 404 });
   }
 
-  // if not paid yet, still block it
+  // ✅ added: verify payment on-chain using transaction signature
+  if (sig && !PAID.has(checkId)) { // ✅ only verify if not already marked paid
+    try {
+      const connection = new Connection("https://api.devnet.solana.com"); // ✅ added: devnet connection
+      const tx = await connection.getTransaction(sig, { commitment: "confirmed" }); // ✅ added: fetch transaction
+      if (tx && tx.meta && !tx.meta.err) { // ✅ added: check if transaction succeeded
+        PAID.add(checkId); // ✅ added: mark checkId as paid
+        console.log(`💰 Payment confirmed for checkId: ${checkId}`); // ✅ added: debug log
+      } else {
+        console.log(`⚠️ Transaction not confirmed or invalid for sig: ${sig}`); // ✅ added: fallback log
+      }
+    } catch (err) {
+      console.error("Error verifying payment:", err); // ✅ added: handle errors gracefully
+    }
+  }
+
   if (!PAID.has(checkId)) {
     return NextResponse.json({ error: "not paid" }, { status: 402 });
   }

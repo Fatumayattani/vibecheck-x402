@@ -1,5 +1,7 @@
 "use client";
 
+import { wrap } from "@faremeter/fetch";
+import { createPaymentHandler } from "@faremeter/payment-solana/exact";  
 import { useState } from "react";
 import {
   Connection,
@@ -28,6 +30,12 @@ export default function Home() {
 
   // Combined flow: search -> /api/check
   async function searchAndCheck() {
+  // Solana Devnet setup (safe public values)
+const connection = new Connection("https://api.devnet.solana.com");
+const usdcMint = new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
+
+  // Submit profile -> expect HTTP 402 with x402 metadata
+  async function submitProfile() {
     try {
       setWorking(true);
       setErrMsg(null);
@@ -38,6 +46,24 @@ export default function Home() {
       if (!handle && !name) {
         setErrMsg("Provide a handle or name to search.");
         setWorking(false);
+  
+  // 🆕 Create a fetch wrapper that includes Solana micropayment step
+    // Use Phantom provider from window.solana as the wallet adapter for on-demand payment signing.
+    const wallet = (typeof window !== "undefined" && (window as any).solana) || null;
+    const fetchWithPayer = wrap(fetch, {
+      handlers: [createPaymentHandler(wallet, usdcMint, connection)], //triggers payment via Phantom
+    });
+      const res = await fetch("/api/check", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, handle, platform, bio }),
+    });
+
+      if (res.status === 402) {
+        const data = await res.json();
+        console.log("🔥 /api/check 402 data:", JSON.stringify(data, null, 2));
+        setPaymentMeta(data);
+        setStatus("pay");
         return;
       }
 
@@ -210,6 +236,78 @@ export default function Home() {
     if (parts.length === 1) return parts[0][0].toUpperCase();
     return (parts[0][0] + parts[1][0]).toUpperCase();
   }
+  // Real SOL payment on Solana Devnet via Phantom, then unlock
+async function doPayment(meta?: any) {
+  const data = meta || paymentMeta; // use passed metadata or fallback
+  if (!data) {
+    console.warn("No payment metadata found — run check first.");
+    return;
+  }
+
+  try {
+    setStatus("paying");
+    setErrMsg(null);
+
+    const provider: any =
+      (typeof window !== "undefined" && (window as any).solana) || null;
+    if (!provider) {
+      alert("Please install Phantom wallet to continue.");
+      setStatus("pay");
+      return;
+    }
+
+    const resp = await provider.connect();
+    const fromPubkey = new PublicKey(resp.publicKey.toString());
+
+    // extract recipient and amount from metadata
+    const recipient =
+      data?.accepts?.[0]?.recipient || data?.recipient || data?.pay_to;
+    if (!recipient) {
+      console.error("Missing recipient! Full data:", data);
+      throw new Error("Missing recipient in payment metadata.");
+    }
+
+    const toPubkey = new PublicKey(recipient);
+    const amountStr = String(
+      data?.accepts?.[0]?.amount ?? data?.amount ?? "0.01"
+    );
+    const amountSol = parseFloat(amountStr);
+    if (Number.isNaN(amountSol) || amountSol <= 0) {
+      throw new Error("Invalid amount in payment metadata.");
+    }
+
+    const lamports = Math.floor(amountSol * 1_000_000_000);
+    const connection = new Connection(clusterApiUrl("devnet"), "confirmed");
+
+    const { blockhash } = await connection.getLatestBlockhash();
+    const tx = new Transaction({
+      recentBlockhash: blockhash,
+      feePayer: fromPubkey,
+    }).add(
+      SystemProgram.transfer({
+        fromPubkey,
+        toPubkey,
+        lamports,
+      })
+    );
+
+    const signedTx = await provider.signTransaction(tx);
+    const sig = await connection.sendRawTransaction(signedTx.serialize());
+    await connection.confirmTransaction(sig, "confirmed");
+
+    console.log("✅ Payment signature:", sig);
+
+    const res = await fetch(`/api/check?checkId=${data.checkId}&sig=${sig}`);
+    const report = await res.json();
+    setReport(report);
+    setStatus("done");
+  } catch (e: any) {
+    console.error("solana payment error:", e);
+    setErrMsg(e?.message || "Payment failed");
+    setStatus("pay");
+  }
+}
+
 
   return (
     <main style={styles.page}>
@@ -357,6 +455,7 @@ export default function Home() {
 
       {/* Payment UI */}
       {status === "pay" && paymentMeta && (
+      {(status === "pay" || status === "paying") && paymentMeta && (
         <div style={styles.payBox}>
           <h3 style={{ margin: 0 }}>402 Payment Required (x402)</h3>
           <p style={{ marginTop: 8 }}>
@@ -375,6 +474,14 @@ export default function Home() {
               Try fetch result
             </button>
           </div>
+          <button
+  onClick={() => doPayment(paymentMeta)} // ✅ added: pass paymentMeta directly to the function
+  style={styles.payBtn}
+  disabled={status === "paying" || !paymentMeta} // ✅ added: disable button if already paying or metadata missing
+>
+  {status === "paying" ? "Waiting for wallet…" : "Pay with Solana (Phantom)"}
+</button>
+
         </div>
       )}
 
